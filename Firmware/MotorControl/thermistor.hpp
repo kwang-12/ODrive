@@ -19,7 +19,6 @@ public:
     bool do_checks();
     float get_current_limit(float base_current_lim) const override;
     void update(); // fetch value and run low pass filter
-    float get_temp() const { return lpf_vals_.back(); };
 
     uint16_t adc_channel_;
     const float* const coefficients_;
