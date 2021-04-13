@@ -22,7 +22,20 @@ ThermistorCurrentLimiter::ThermistorCurrentLimiter(uint16_t adc_channel,
 void ThermistorCurrentLimiter::update() {
     const float voltage = get_adc_voltage_channel(adc_channel_);
     const float normalized_voltage = voltage / adc_ref_voltage;
-    temperature_ = horner_fma(normalized_voltage, coefficients_, num_coeffs_);
+    float raw_temp = horner_fma(normalized_voltage, coefficients_, num_coeffs_);
+
+    constexpr float tau = 0.1f; // [sec]
+    float k = current_meas_period / tau;
+    float val = raw_temp;
+    for (float& lpf_val : lpf_vals_) {
+        lpf_val += k * (val - lpf_val);
+        val = lpf_val;
+    }
+    if (is_nan(val)) {
+        lpf_vals_.fill(0.0f);
+    }
+
+    temperature_ = lpf_vals_.back();
 }
 
 bool ThermistorCurrentLimiter::do_checks() {

@@ -16,9 +16,10 @@ public:
                              const float& temp_limit_upper,
                              const bool& enabled);
 
-    void update();
     bool do_checks();
     float get_current_limit(float base_current_lim) const override;
+    void update(); // fetch value and run low pass filter
+    float get_temp() const { return lpf_vals_.back(); };
 
     uint16_t adc_channel_;
     const float* const coefficients_;
@@ -29,6 +30,7 @@ public:
     const bool& enabled_;
     Error error_;
     Axis* axis_ = nullptr; // set by Axis constructor
+    std::array<float, 2> lpf_vals_ = { 0.0f };
 };
 
 class OnboardThermistorCurrentLimiter : public ThermistorCurrentLimiter, public ODriveIntf::OnboardThermistorCurrentLimiterIntf {

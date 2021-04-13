@@ -84,6 +84,13 @@ static const float one_by_sqrt3 = 0.57735026919f;
 static const float two_by_sqrt3 = 1.15470053838f;
 static const float sqrt3_by_2 = 0.86602540378f;
 
+// To allow use of -ffast-math we need to have a special check for nan
+// that bypasses the "ignore nan" flag
+__attribute__((optimize("-fno-finite-math-only")))
+inline bool is_nan(float x) {
+    return __builtin_isnan(x);
+}
+
 // like fmodf, but always positive
 static inline float fmodf_pos(float x, float y) {
     float out = fmodf(x, y);
