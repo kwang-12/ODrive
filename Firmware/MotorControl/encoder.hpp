@@ -11,7 +11,7 @@ public:
     static constexpr uint32_t MODE_FLAG_ABS = 0x100;
 
     struct Config_t {
-        Mode mode = MODE_INCREMENTAL;
+        Mode mode = MODE_SPI_ABS_AMS;
         bool use_index = false;
         bool pre_calibrated = false; // If true, this means the offset stored in
                                     // configuration is valid and does not need
@@ -19,7 +19,7 @@ public:
                                     // In this case the encoder will enter ready
                                     // state as soon as the index is found.
         bool zero_count_on_find_idx = true;
-        int32_t cpr = (2048 * 4);   // Default resolution of CUI-AMT102 encoder,
+        int32_t cpr = 16384; 
         int32_t offset = 0;        // Offset between encoder count and rotor electrical phase
         float offset_float = 0.0f; // Sub-count phase alignment offset
         bool enable_phase_interpolation = true; // Use velocity to interpolate inside the count state
@@ -33,6 +33,7 @@ public:
         uint16_t abs_spi_cs_gpio_pin = 1;
         uint16_t sincos_gpio_pin_sin = 3;
         uint16_t sincos_gpio_pin_cos = 4;
+        float spi_error_rate_threshold = 0.01f;
 
         // custom setters
         Encoder* parent = nullptr;

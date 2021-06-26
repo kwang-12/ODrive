@@ -796,6 +796,7 @@ interfaces:
           ignore_illegal_hall_state: bool
           sincos_gpio_pin_sin: uint16
           sincos_gpio_pin_cos: uint16
+          spi_error_rate_threshold: float32
     functions:
       set_linear_count: {in: {count: int32}}
 
