@@ -496,6 +496,7 @@ void Axis::run_state_machine_loop() {
                     task_chain_[pos++] = AXIS_STATE_ENCODER_INDEX_SEARCH;
                 task_chain_[pos++] = AXIS_STATE_ENCODER_OFFSET_CALIBRATION;
                 task_chain_[pos++] = AXIS_STATE_IDLE;
+                joint_mode_ = jointMode::JOINTMODE_CALIBRATION;
             } else if (requested_state_ != AXIS_STATE_UNDEFINED) {
                 task_chain_[pos++] = requested_state_;
                 task_chain_[pos++] = AXIS_STATE_IDLE;
@@ -570,6 +571,7 @@ void Axis::run_state_machine_loop() {
             } break;
 
             case AXIS_STATE_IDLE: {
+                joint_mode_ = jointMode::JOINTMODE_OFF;
                 run_idle_loop();
                 status = motor_.arm(); // done with idling - try to arm the motor
             } break;
@@ -588,6 +590,10 @@ void Axis::run_state_machine_loop() {
         } else {
             std::rotate(task_chain_.begin(), task_chain_.begin() + 1, task_chain_.end());
             task_chain_.back() = AXIS_STATE_UNDEFINED;
+        }
+        if (error_ > 0)
+        {
+            joint_mode_ = jointMode::JOINTMODE_ERROR;
         }
     }
 }

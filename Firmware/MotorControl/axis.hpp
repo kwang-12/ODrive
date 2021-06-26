@@ -7,6 +7,31 @@
 
 #include <array>
 
+typedef enum
+{
+    TURN_OFF = 0,                               // Set jointmode to JOINTMODE_OFF
+    TORQUE_CONTROL = 1,                         // Set jointmode to JOINTMODE_TORQUE_CONTROL
+    POSITION_CONTROL_NORMAL = 2,                // Set jointmode to JOINTMODE_POSITION_CONTROL_NORMAL
+    POSITION_CONTROL_LOW_TORQUE = 3,            // Set jointmode to JOINTMODE_POSITION_CONTROL_LOW_TORQUE
+    VELOCITY_CONTROL_LOW_TORQUE = 4,            // Set jointmode to JOINTMODE_VELOCITY_CONTROL_LOW_TORQUE
+    FULL_CALIBRATION = 5,                       // Request state: AXIS_STATE_FULL_CALIBRATION_SEQUENCE
+    CLEAR_ERROR = 6,                            // Request clear error: clear_errors()
+    EMPTY = 9                                   // Disregard the sent command
+} driverCmd;
+
+typedef enum
+{
+    JOINTMODE_OFF = 0,                          // explicitly turned off   -   no targets will be sent
+    JOINTMODE_TORQUE_CONTROL = 1,               // torque control mode  -   target torque
+    JOINTMODE_POSITION_CONTROL_NORMAL = 2,      // normal position control mode (normal operation)  -   position, velocity, feedforward torque
+    JOINTMODE_POSITION_CONTROL_LOW_TORQUE = 3,  // low torque limit position control mode (for calibration) -   position, velocity, feedforward torque
+    JOINTMODE_VELOCITY_CONTROL_LOW_TORQUE = 4,  // low torque limit velocity control mode (for calibration) -   target velocity
+    JOINTMODE_CALIBRATION = 5,                  // joint calibration by the controller (not the qped calibration routine)
+    JOINTMODE_CONTROL_MSG_ERROR = 6,            // received command is corrupted
+    JOINTMODE_ERROR = 7                         // error is reported by the controller
+} jointMode;
+
+
 class Axis : public ODriveIntf::AxisIntf {
 public:
     struct LockinConfig_t {
@@ -226,6 +251,7 @@ public:
     GPIO_TypeDef* dir_port_;
     uint16_t dir_pin_;
 
+    jointMode joint_mode_ = jointMode::JOINTMODE_OFF;
     AxisState requested_state_ = AXIS_STATE_STARTUP_SEQUENCE;
     std::array<AxisState, 10> task_chain_ = { AXIS_STATE_UNDEFINED };
     AxisState& current_state_ = task_chain_.front();
