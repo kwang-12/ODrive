@@ -44,13 +44,144 @@ void respond(StreamSink& output, bool include_checksum, const char * fmt, TArgs&
         uint8_t checksum = 0;
         for (size_t i = 0; i < len; ++i)
             checksum ^= response[i];
-        len = snprintf(response, sizeof(response), "*%u", checksum);
+        len = snprintf(response, sizeof(response), "!%u", checksum);
         len = std::min(len, sizeof(response));
         output.process_bytes((uint8_t*)response, len, nullptr);
     }
-    output.process_bytes((const uint8_t*)"\r\n", 2, nullptr);
+    output.process_bytes((const uint8_t*)"\n", 1, nullptr);
 }
 
+float serial_get_float(char *buf, int *decimal_pos, int decimal_idx)
+{
+    bool is_negative = false;
+    float reading;
+    for (int idx_start = decimal_pos[decimal_idx - 1]; idx_start < decimal_pos[decimal_idx]; idx_start++)
+    {
+        is_negative |= (buf[idx_start + 3] == 45);
+        if (is_negative)
+            break;
+    }
+    int first_part_length = decimal_pos[decimal_idx] - decimal_pos[decimal_idx - 1];
+
+    // abs bigger than ten
+    // 12.34-12.34
+    // 0123456789
+    // 8 - 2 = 6
+    // 12.3412.34
+    // 0123456789
+    // 7 - 2 = 5
+
+    // abs bigger than one hundred
+    // 12.34-123.4
+    // 0123456789
+    // 9 - 2 = 7
+    // 12.34123.4
+    // 0123456789
+    // 8 - 2 = 6
+    bool abs_bigger_than_ten = (is_negative && first_part_length == 6) || (!is_negative && first_part_length == 5);
+    bool abs_bigger_than_one_hundred = (is_negative && first_part_length == 7) || (!is_negative && first_part_length == 6);
+    reading = 1 * (buf[decimal_pos[decimal_idx] - 1] - 48) + (buf[decimal_pos[decimal_idx] + 1] - 48) * 0.1f + (buf[decimal_pos[decimal_idx] + 2] - 48) * 0.01f;
+    if (abs_bigger_than_ten)
+        reading += 10 * (buf[decimal_pos[decimal_idx] - 2] - 48);
+    else if (abs_bigger_than_one_hundred)
+    {
+        reading += 10 * (buf[decimal_pos[decimal_idx] - 2] - 48) + 
+                  100 * (buf[decimal_pos[decimal_idx] - 3] - 48);
+    }
+    if (is_negative)
+        reading *= -1;
+    return reading;
+}
+
+void set_axis_limits(Axis* axis, float desired_torque_limit, float desired_velocity_limit)
+{
+    axis->controller_.config_.vel_limit = desired_velocity_limit;
+    axis->motor_.config_.torque_lim = desired_torque_limit;
+}
+
+void set_axis_targets(Axis* axis, driverCmd axis_cmd, float desired_pos, float desired_vel, float desired_tau)
+{
+    // assign the desired values if no errors detected
+    if (axis->joint_mode_ != jointMode::JOINTMODE_ERROR)
+    {
+        switch (axis_cmd)
+        {
+            case driverCmd::TURN_OFF:
+            {
+                axis->requested_state_ = Axis::AXIS_STATE_IDLE;
+                break;
+            }
+            case driverCmd::TORQUE_CONTROL:
+            {
+                axis->joint_mode_ = jointMode::JOINTMODE_TORQUE_CONTROL;
+                axis->requested_state_ = Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
+                axis->controller_.config_.control_mode = Controller::CONTROL_MODE_TORQUE_CONTROL;
+                set_axis_limits(axis, 3.1f, 20.f);   // limit vel to 20*2*pi/13 = 9.67 rad/sec, limit torque to 13*3.1 = 40.3 Nm
+                axis->controller_.input_torque_ = desired_tau;
+                axis->watchdog_feed();
+                break;
+            }
+            case driverCmd::POSITION_CONTROL_NORMAL:
+            {
+                axis->joint_mode_ = jointMode::JOINTMODE_POSITION_CONTROL_NORMAL;
+                axis->requested_state_ = Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
+                axis->controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
+                set_axis_limits(axis, 3.1f, 20.f);   // limit vel to 20*2*pi/13 = 9.67 rad/sec, limit torque to 13*3.1 = 40.3 Nm
+                axis->controller_.input_pos_ = desired_pos;
+                axis->controller_.input_vel_ = desired_vel;
+                axis->controller_.input_torque_ = desired_tau;
+                axis->watchdog_feed();
+                break;
+            }
+            case driverCmd::POSITION_CONTROL_LOW_TORQUE:
+            {
+                axis->joint_mode_ = jointMode::JOINTMODE_POSITION_CONTROL_LOW_TORQUE;
+                axis->requested_state_ = Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
+                axis->controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
+                set_axis_limits(axis, 0.3f, 5.f);   // limit vel to 5*2*pi/13 = 2.417 rad/sec, limit torque to 0.3*3.1 = 3.9 Nm
+                axis->controller_.input_pos_ = desired_pos;
+                axis->controller_.input_vel_ = desired_vel;
+                axis->controller_.input_torque_ = desired_tau;
+                axis->watchdog_feed();
+                break;
+            }
+            case driverCmd::VELOCITY_CONTROL_LOW_TORQUE:
+            {
+                axis->joint_mode_ = jointMode::JOINTMODE_VELOCITY_CONTROL_LOW_TORQUE;
+                axis->requested_state_ = Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
+                axis->controller_.config_.control_mode = Controller::CONTROL_MODE_VELOCITY_CONTROL;
+                set_axis_limits(axis, 0.3f, 5.f);   // limit vel to 5*2*pi/13 = 2.417 rad/sec, limit torque to 0.3*3.1 = 3.9 Nm
+                axis->controller_.input_vel_ = desired_vel;
+                axis->controller_.input_torque_ = desired_tau;
+                axis->watchdog_feed();
+                break;
+            }
+            case driverCmd::FULL_CALIBRATION:
+            {
+                axis->requested_state_ = Axis::AXIS_STATE_FULL_CALIBRATION_SEQUENCE;
+                break;
+            }
+            case driverCmd::CLEAR_ERROR:
+            {
+                axis->clear_errors();
+                axis->requested_state_ = Axis::AXIS_STATE_IDLE;
+                axis->controller_.input_pos_ = 0;
+                axis->controller_.input_vel_ = 0;
+                axis->controller_.input_torque_ = 0;
+                break;
+            }
+            case driverCmd::EMPTY:
+            {
+                // do nothing
+                break;
+            }
+        }
+    }
+    else
+    {
+        axis->requested_state_ = Axis::AXIS_STATE_IDLE; // Turn off motor if joint_mode_ is JOINTMODE_ERROR
+    }
+}
 
 // @brief Executes an ASCII protocol command
 // @param buffer buffer of ASCII encoded characters
@@ -67,7 +198,7 @@ void ASCII_protocol_process_line(const uint8_t* buffer, size_t len, StreamSink& 
             break;
         }
         if (checksum_start > i) {
-            if (buffer[i] == '*') {
+            if (buffer[i] == '!') {
                 checksum_start = i + 1;
             } else {
                 checksum ^= buffer[i];
@@ -81,206 +212,153 @@ void ASCII_protocol_process_line(const uint8_t* buffer, size_t len, StreamSink& 
     memcpy(cmd, buffer, len);
     cmd[len] = 0; // null-terminate
 
-    // optional checksum validation
+    // checksum validation
     bool use_checksum = (checksum_start < len);
     if (use_checksum) {
         unsigned int received_checksum;
         int numscan = sscanf((const char *)cmd + checksum_start, "%u", &received_checksum);
+        // wrong checksum -- error
         if ((numscan < 1) || (received_checksum != checksum))
+        {
+            respond(response_channel, true, "%u%u%.2f%.2f%.2f%.2f%.2f%.2f%.2f", 
+                    int(jointMode::JOINTMODE_CONTROL_MSG_ERROR), int(jointMode::JOINTMODE_CONTROL_MSG_ERROR),
+                    double(std::clamp(vbus_voltage, 0.f, 30.f)),
+                    double(0),double(0),double(0),double(0),double(0),double(0));
             return;
+        }
         len = checksum_start - 1; // prune checksum and asterisk
         cmd[len] = 0; // null-terminate
     }
+    else    // checksum not detected -- error
+    {
+        respond(response_channel, true, "%u%u%.2f%.2f%.2f%.2f%.2f%.2f%.2f", 
+                int(jointMode::JOINTMODE_CONTROL_MSG_ERROR), int(jointMode::JOINTMODE_CONTROL_MSG_ERROR),
+                double(std::clamp(vbus_voltage, 0.f, 30.f)),
+                double(0),double(0),double(0),double(0),double(0),double(0));
+        return;
+    }
 
-
-    // check incoming packet type
-    if (cmd[0] == 'p') { // position control
-        unsigned motor_number;
-        float pos_setpoint, vel_feed_forward, torque_feed_forward;
-        int numscan = sscanf(cmd, "p %u %f %f %f", &motor_number, &pos_setpoint, &vel_feed_forward, &torque_feed_forward);
-        if (numscan < 2) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        } else {
-            Axis* axis = axes[motor_number];
-            axis->controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
-            axis->controller_.input_pos_ = pos_setpoint;
-            if (numscan >= 3)
-                axis->controller_.input_vel_ = vel_feed_forward;
-            if (numscan >= 4)
-                axis->controller_.input_torque_ = torque_feed_forward;
-            axis->controller_.input_pos_updated();
-            axis->watchdog_feed();
+    // Process control signal from serial
+    int decimal_num = 0;
+    int decimal_pos[6] = {0,0,0,0,0,0};
+    for (size_t i = 0; i < len; i++)
+    {
+        if (decimal_num > 6)
+        {
+            return;
         }
-
-    } else if (cmd[0] == 'q') { // position control with limits
-        unsigned motor_number;
-        float pos_setpoint, vel_limit, torque_lim;
-        int numscan = sscanf(cmd, "q %u %f %f %f", &motor_number, &pos_setpoint, &vel_limit, &torque_lim);
-        if (numscan < 2) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        } else {
-            Axis* axis = axes[motor_number];
-            axis->controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
-            axis->controller_.input_pos_ = pos_setpoint;
-            if (numscan >= 3)
-                axis->controller_.config_.vel_limit = vel_limit;
-            if (numscan >= 4)
-                axis->motor_.config_.torque_lim = torque_lim;
-            axis->controller_.input_pos_updated();
-            axis->watchdog_feed();
+        if (cmd[i] == 46)
+        {
+            decimal_pos[decimal_num] = i;
+            decimal_num++;
         }
-
-    } else if (cmd[0] == 'v') { // velocity control
-        unsigned motor_number;
-        float vel_setpoint, torque_feed_forward;
-        int numscan = sscanf(cmd, "v %u %f %f", &motor_number, &vel_setpoint, &torque_feed_forward);
-        if (numscan < 2) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        } else {
-            Axis* axis = axes[motor_number];
-            axis->controller_.config_.control_mode = Controller::CONTROL_MODE_VELOCITY_CONTROL;
-            axis->controller_.input_vel_ = vel_setpoint;
-            if (numscan >= 3)
-                axis->controller_.input_torque_ = torque_feed_forward;
-            axis->watchdog_feed();
+    }
+    if (decimal_num == 5)
+    {
+        Axis* a0 = axes[0];
+        Axis* a1 = axes[1];
+        driverCmd a0_cmd = driverCmd(cmd[0]-48);
+        driverCmd a1_cmd = driverCmd(cmd[1]-48);
+        float a0_desired_pos = 0;
+        // 012345
+        // 001.23       3
+        if (decimal_pos[0] == 3)
+        {
+            a0_desired_pos = (cmd[2] - 48) + (cmd[4] - 48) * 0.1f + (cmd[5] - 48) * 0.01f;
         }
-
-    } else if (cmd[0] == 'c') { // torque control
-        unsigned motor_number;
-        float torque_setpoint;
-        int numscan = sscanf(cmd, "c %u %f", &motor_number, &torque_setpoint);
-        if (numscan < 2) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        } else {
-            Axis* axis = axes[motor_number];
-            axis->controller_.config_.control_mode = Controller::CONTROL_MODE_TORQUE_CONTROL;
-            axis->controller_.input_torque_ = torque_setpoint;
-            axis->watchdog_feed();
-        }
-
-    } else if (cmd[0] == 't') { // trapezoidal trajectory
-        unsigned motor_number;
-        float goal_point;
-        int numscan = sscanf(cmd, "t %u %f", &motor_number, &goal_point);
-        if (numscan < 2) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        } else {
-            Axis* axis = axes[motor_number];
-            axis->controller_.config_.input_mode = Controller::INPUT_MODE_TRAP_TRAJ;
-            axis->controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
-            axis->controller_.input_pos_ = goal_point;
-            axis->controller_.input_pos_updated();
-            axis->watchdog_feed();
-        }
-
-    } else if (cmd[0] == 'f') { // feedback
-        unsigned motor_number;
-        int numscan = sscanf(cmd, "f %u", &motor_number);
-        if (numscan < 1) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        } else {
-            respond(response_channel, use_checksum, "%f %f",
-                    (double)axes[motor_number]->encoder_.pos_estimate_,
-                    (double)axes[motor_number]->encoder_.vel_estimate_);
-        }
-
-    } else if (cmd[0] == 'h') {  // Help
-        respond(response_channel, use_checksum, "Please see documentation for more details");
-        respond(response_channel, use_checksum, "");
-        respond(response_channel, use_checksum, "Available commands syntax reference:");
-        respond(response_channel, use_checksum, "Position: q axis pos vel-lim I-lim");
-        respond(response_channel, use_checksum, "Position: p axis pos vel-ff I-ff");
-        respond(response_channel, use_checksum, "Velocity: v axis vel I-ff");
-        respond(response_channel, use_checksum, "Torque: c axis T");
-        respond(response_channel, use_checksum, "");
-        respond(response_channel, use_checksum, "Properties start at odrive root, such as axis0.requested_state");
-        respond(response_channel, use_checksum, "Read: r property");
-        respond(response_channel, use_checksum, "Write: w property value");
-        respond(response_channel, use_checksum, "");
-        respond(response_channel, use_checksum, "Save config: ss");
-        respond(response_channel, use_checksum, "Erase config: se");
-        respond(response_channel, use_checksum, "Reboot: sr");
-
-    } else if (cmd[0] == 'i'){ // Dump device info
-        // respond(response_channel, use_checksum, "Signature: %#x", STM_ID_GetSignature());
-        // respond(response_channel, use_checksum, "Revision: %#x", STM_ID_GetRevision());
-        // respond(response_channel, use_checksum, "Flash Size: %#x KiB", STM_ID_GetFlashSize());
-        respond(response_channel, use_checksum, "Hardware version: %d.%d-%dV", odrv.hw_version_major_, odrv.hw_version_minor_, odrv.hw_version_variant_);
-        respond(response_channel, use_checksum, "Firmware version: %d.%d.%d", odrv.fw_version_major_, odrv.fw_version_minor_, odrv.fw_version_revision_);
-        respond(response_channel, use_checksum, "Serial number: %s", serial_number_str);
-
-    } else if (cmd[0] == 's'){ // System
-        if(cmd[1] == 's') { // Save config
-            odrv.save_configuration();
-        } else if (cmd[1] == 'e'){ // Erase config
-            odrv.erase_configuration();
-        } else if (cmd[1] == 'r'){ // Reboot
-            odrv.reboot();
-        }
-
-    } else if (cmd[0] == 'r') { // read property
-        char name[MAX_LINE_LENGTH];
-        int numscan = sscanf(cmd, "r %255s", name);
-        if (numscan < 1) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else {
-            Introspectable property = root_obj.get_child(name, sizeof(name));
-            const StringConvertibleTypeInfo* type_info = dynamic_cast<const StringConvertibleTypeInfo*>(property.get_type_info());
-            if (!type_info) {
-                respond(response_channel, use_checksum, "invalid property");
-            } else {
-                char response[10];
-                bool success = type_info->get_string(property, response, sizeof(response));
-                if (!success)
-                    respond(response_channel, use_checksum, "not implemented");
-                else
-                    respond(response_channel, use_checksum, response);
+        else if (decimal_pos[0] == 4)
+        {
+        // 0123456
+        // 00-1.23      4
+            if (cmd[2] == 45)
+            {
+                a0_desired_pos = ((cmd[3] - 48) + (cmd[5] - 48) * 0.1f + (cmd[6] - 48) * 0.01f) * -1;
+            }
+        // 0123456
+        // 0012.34      4
+            else
+            {
+                a0_desired_pos = 10 * (cmd[2] - 48) + (cmd[3] - 48) + (cmd[5] - 48) * 0.1f + (cmd[6] - 48) * 0.01f;
             }
         }
-
-    } else if (cmd[0] == 'w') { // write property
-        char name[MAX_LINE_LENGTH];
-        char value[MAX_LINE_LENGTH];
-        int numscan = sscanf(cmd, "w %255s %255s", name, value);
-        if (numscan < 1) {
-            respond(response_channel, use_checksum, "invalid command format");
-        } else {
-            Introspectable property = root_obj.get_child(name, sizeof(name));
-            const StringConvertibleTypeInfo* type_info = dynamic_cast<const StringConvertibleTypeInfo*>(property.get_type_info());
-            if (!type_info) {
-                respond(response_channel, use_checksum, "invalid property");
-            } else {
-                bool success = type_info->set_string(property, value, sizeof(value));
-                if (!success)
-                    respond(response_channel, use_checksum, "not implemented");
+        else if (decimal_pos[0] == 5)
+        {
+        // 01234567
+        // 00-12.34     5
+            if (cmd[2] == 45)
+            {
+                a0_desired_pos = (10 * (cmd[3] - 48) + (cmd[4] - 48) + (cmd[6] - 48) * 0.1f + (cmd[7] - 48) * 0.01f) * -1;
+            }
+        // 01234567
+        // 00123.45     5
+            else
+            {
+                a0_desired_pos = 100 * (cmd[2] - 48) + 10 * (cmd[3] - 48) + (cmd[4] - 48) + (cmd[6] - 48) * 0.1f + (cmd[7] - 48) * 0.01f;
             }
         }
-
-    } else if (cmd[0] == 'u') { // Update axis watchdog. 
-        unsigned motor_number;
-        int numscan = sscanf(cmd, "u %u", &motor_number);
-        if(numscan < 1){
-            respond(response_channel, use_checksum, "invalid command format");
-        } else if (motor_number >= AXIS_COUNT) {
-            respond(response_channel, use_checksum, "invalid motor %u", motor_number);
-        }else {
-            axes[motor_number]->watchdog_feed();
+        // 012345678
+        // 00-123.45    6
+        else if (decimal_pos[0] == 6)
+        {
+            a0_desired_pos = (100 * (cmd[3] - 48) + 10 * (cmd[4] - 48) + (cmd[5] - 48) + 0.1f * (cmd[7] - 48) + 0.01f * (cmd[8] - 48)) * -1;
         }
+        a0_desired_pos = a0_desired_pos / (2*M_PI);
+        float a0_desired_vel = serial_get_float(cmd, decimal_pos, 1) / (2*M_PI);
+        float a0_desired_tau = serial_get_float(cmd, decimal_pos, 2);
+        float a1_desired_pos = serial_get_float(cmd, decimal_pos, 3) / (2*M_PI);
+        float a1_desired_vel = serial_get_float(cmd, decimal_pos, 4) / (2*M_PI);
+        float a1_desired_tau = serial_get_float(cmd, decimal_pos, 5);
 
-    } else if (cmd[0] != 0) {
-        respond(response_channel, use_checksum, "unknown command");
+        set_axis_targets(a0, a0_cmd, a0_desired_pos, a0_desired_vel, a0_desired_tau);
+        set_axis_targets(a1, a1_cmd, a1_desired_pos, a1_desired_vel, a1_desired_tau);
+        if (a0->joint_mode_ != jointMode::JOINTMODE_ERROR && a1->joint_mode_ != jointMode::JOINTMODE_ERROR)
+        {
+            respond(response_channel, true, "%u%u%.2f%.2f%.2f%.2f%.2f%.2f%.2f", 
+                    int(a0->joint_mode_), int(a1->joint_mode_),
+                    double(std::clamp(vbus_voltage, float(0), float(30))),
+                    double(std::clamp(a0->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a0->encoder_.vel_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a0->motor_.current_control_.Iq_measured * a0->motor_.config_.torque_constant, -999.f, 999.f)),
+                    double(std::clamp(a1->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a1->encoder_.vel_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a1->motor_.current_control_.Iq_measured * a1->motor_.config_.torque_constant, -999.f, 999.f)));
+        }
+        else if (a0->joint_mode_ == jointMode::JOINTMODE_ERROR && a1->joint_mode_ != jointMode::JOINTMODE_ERROR)
+        {
+            respond(response_channel, true, "%u%u%.2f%u%u%u%.2f%.2f%.2f", 
+                    int(a0->joint_mode_), int(a1->joint_mode_),
+                    double(std::clamp(vbus_voltage, float(0), float(30))),
+                    int(a0->motor_.error_),
+                    int(a0->encoder_.error_),
+                    int(a0->controller_.error_),
+                    double(std::clamp(a1->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a1->encoder_.vel_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a1->motor_.current_control_.Iq_measured * a1->motor_.config_.torque_constant, -999.f, 999.f)));
+        }
+        else if (a0->joint_mode_ != jointMode::JOINTMODE_ERROR && a1->joint_mode_ == jointMode::JOINTMODE_ERROR)
+        {
+            respond(response_channel, true, "%u%u%.2f%.2f%.2f%.2f%u%u%u", 
+                    int(a0->joint_mode_), int(a1->joint_mode_),
+                    double(std::clamp(vbus_voltage, float(0), float(30))),
+                    double(std::clamp(a0->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a0->encoder_.vel_estimate_*2*M_PI, -999.f, 999.f)), 
+                    double(std::clamp(a0->motor_.current_control_.Iq_measured * a0->motor_.config_.torque_constant, -999.f, 999.f)),
+                    int(a1->motor_.error_),
+                    int(a1->encoder_.error_),
+                    int(a1->controller_.error_));
+        }
+        else if (a0->joint_mode_ == jointMode::JOINTMODE_ERROR && a1->joint_mode_ == jointMode::JOINTMODE_ERROR)
+        {
+            respond(response_channel, true, "%u%u%.2f%u%u%u%u%u%u", 
+                    int(a0->joint_mode_), int(a1->joint_mode_),
+                    double(std::clamp(vbus_voltage, float(0), float(30))),
+                    int(a0->motor_.error_),
+                    int(a0->encoder_.error_),
+                    int(a0->controller_.error_),
+                    int(a1->motor_.error_),
+                    int(a1->encoder_.error_),
+                    int(a1->controller_.error_));
+        }
     }
 }
 
@@ -298,7 +376,7 @@ void ASCII_protocol_parse_stream(const uint8_t* buffer, size_t len, StreamSink& 
 
         // Fetch the next char
         uint8_t c = *(buffer++);
-        bool is_end_of_line = (c == '\r' || c == '\n' || c == '!');
+        bool is_end_of_line = c == '\n';
         if (is_end_of_line) {
             if (read_active)
                 ASCII_protocol_process_line(parse_buffer, parse_buffer_idx, response_channel);
