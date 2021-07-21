@@ -138,7 +138,7 @@ void set_axis_targets(Axis* axis, driverCmd axis_cmd, float desired_pos, float d
                 axis->joint_mode_ = jointMode::JOINTMODE_POSITION_CONTROL_LOW_TORQUE;
                 axis->requested_state_ = Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
                 axis->controller_.config_.control_mode = Controller::CONTROL_MODE_POSITION_CONTROL;
-                set_axis_limits(axis, 0.3f, 5.f);   // limit vel to 5*2*pi/13 = 2.417 rad/sec, limit torque to 0.3*3.1 = 3.9 Nm
+                set_axis_limits(axis, 1.0f, 5.f);   // limit vel to 5*2*pi/13 = 2.417 rad/sec, limit torque to 0.3*3.1 = 3.9 Nm
                 axis->controller_.input_pos_ = desired_pos;
                 axis->controller_.input_vel_ = desired_vel;
                 axis->controller_.input_torque_ = desired_tau;
@@ -150,7 +150,7 @@ void set_axis_targets(Axis* axis, driverCmd axis_cmd, float desired_pos, float d
                 axis->joint_mode_ = jointMode::JOINTMODE_VELOCITY_CONTROL_LOW_TORQUE;
                 axis->requested_state_ = Axis::AXIS_STATE_CLOSED_LOOP_CONTROL;
                 axis->controller_.config_.control_mode = Controller::CONTROL_MODE_VELOCITY_CONTROL;
-                set_axis_limits(axis, 0.3f, 5.f);   // limit vel to 5*2*pi/13 = 2.417 rad/sec, limit torque to 0.3*3.1 = 3.9 Nm
+                set_axis_limits(axis, 1.0f, 5.f);   // limit vel to 5*2*pi/13 = 2.417 rad/sec, limit torque to 0.3*3.1 = 3.9 Nm
                 axis->controller_.input_vel_ = desired_vel;
                 axis->controller_.input_torque_ = desired_tau;
                 axis->watchdog_feed();
@@ -253,7 +253,7 @@ void ASCII_protocol_process_line(const uint8_t* buffer, size_t len, StreamSink& 
             decimal_num++;
         }
     }
-    if (decimal_num == 5)
+    if (decimal_num == 5)   // cmds should contain 6 floats
     {
         Axis* a0 = axes[0];
         Axis* a1 = axes[1];
@@ -313,7 +313,7 @@ void ASCII_protocol_process_line(const uint8_t* buffer, size_t len, StreamSink& 
         set_axis_targets(a1, a1_cmd, a1_desired_pos, a1_desired_vel, a1_desired_tau);
         if (a0->joint_mode_ != jointMode::JOINTMODE_ERROR && a1->joint_mode_ != jointMode::JOINTMODE_ERROR)
         {
-            respond(response_channel, true, "%u%u%.2f%.2f%.2f%.2f%.2f%.2f%.2f", 
+            respond(response_channel, true, "%u%u%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f", 
                     int(a0->joint_mode_), int(a1->joint_mode_),
                     double(std::clamp(vbus_voltage, float(0), float(30))),
                     double(std::clamp(a0->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
@@ -325,39 +325,39 @@ void ASCII_protocol_process_line(const uint8_t* buffer, size_t len, StreamSink& 
         }
         else if (a0->joint_mode_ == jointMode::JOINTMODE_ERROR && a1->joint_mode_ != jointMode::JOINTMODE_ERROR)
         {
-            respond(response_channel, true, "%u%u%.2f%u%u%u%.2f%.2f%.2f", 
+            respond(response_channel, true, "%u%u%.2f,%u,%u,%u,%.2f,%.2f,%.2f", 
                     int(a0->joint_mode_), int(a1->joint_mode_),
                     double(std::clamp(vbus_voltage, float(0), float(30))),
-                    int(a0->motor_.error_),
-                    int(a0->encoder_.error_),
-                    int(a0->controller_.error_),
+                    std::clamp(int(a0->motor_.error_), 0, 255),
+                    std::clamp(int(a0->encoder_.error_), 0, 255),
+                    std::clamp(int(a0->controller_.error_), 0, 255),
                     double(std::clamp(a1->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
                     double(std::clamp(a1->encoder_.vel_estimate_*2*M_PI, -999.f, 999.f)), 
                     double(std::clamp(a1->motor_.current_control_.Iq_measured * a1->motor_.config_.torque_constant, -999.f, 999.f)));
         }
         else if (a0->joint_mode_ != jointMode::JOINTMODE_ERROR && a1->joint_mode_ == jointMode::JOINTMODE_ERROR)
         {
-            respond(response_channel, true, "%u%u%.2f%.2f%.2f%.2f%u%u%u", 
+            respond(response_channel, true, "%u%u%.2f,%.2f,%.2f,%.2f,%u,%u,%u", 
                     int(a0->joint_mode_), int(a1->joint_mode_),
                     double(std::clamp(vbus_voltage, float(0), float(30))),
                     double(std::clamp(a0->encoder_.pos_estimate_*2*M_PI, -999.f, 999.f)), 
                     double(std::clamp(a0->encoder_.vel_estimate_*2*M_PI, -999.f, 999.f)), 
                     double(std::clamp(a0->motor_.current_control_.Iq_measured * a0->motor_.config_.torque_constant, -999.f, 999.f)),
-                    int(a1->motor_.error_),
-                    int(a1->encoder_.error_),
-                    int(a1->controller_.error_));
+                    std::clamp(int(a1->motor_.error_), 0, 255),
+                    std::clamp(int(a1->encoder_.error_), 0, 255),
+                    std::clamp(int(a1->controller_.error_), 0, 255));
         }
         else if (a0->joint_mode_ == jointMode::JOINTMODE_ERROR && a1->joint_mode_ == jointMode::JOINTMODE_ERROR)
         {
-            respond(response_channel, true, "%u%u%.2f%u%u%u%u%u%u", 
+            respond(response_channel, true, "%u%u%.2f,%u,%u,%u,%u,%u,%u", 
                     int(a0->joint_mode_), int(a1->joint_mode_),
                     double(std::clamp(vbus_voltage, float(0), float(30))),
-                    int(a0->motor_.error_),
-                    int(a0->encoder_.error_),
-                    int(a0->controller_.error_),
-                    int(a1->motor_.error_),
-                    int(a1->encoder_.error_),
-                    int(a1->controller_.error_));
+                    std::clamp(int(a0->motor_.error_), 0, 255),
+                    std::clamp(int(a0->encoder_.error_), 0, 255),
+                    std::clamp(int(a0->controller_.error_), 0, 255),
+                    std::clamp(int(a1->motor_.error_), 0, 255),
+                    std::clamp(int(a1->encoder_.error_), 0, 255),
+                    std::clamp(int(a1->controller_.error_), 0, 255));
         }
     }
 }
